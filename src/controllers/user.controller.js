@@ -4,13 +4,9 @@ module.exports.getUsersWithPostCount = async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
-
     const skip = (page - 1) * limit;
 
     const usersAggregate = [
-      {
-        $match: {},
-      },
       {
         $lookup: {
           from: 'posts',
@@ -26,32 +22,63 @@ module.exports.getUsersWithPostCount = async (req, res) => {
         },
       },
       {
-        $skip: skip,
+        $facet: {
+          metadata: [
+            { $count: 'totalDocs' },
+            { $addFields: { page, limit } },
+          ],
+          data: [
+            { $skip: skip },
+            { $limit: limit },
+          ],
+        },
       },
       {
-        $limit: limit,
+        $unwind: '$metadata',
+      },
+      {
+        $project: {
+          totalDocs: '$metadata.totalDocs',
+          limit: '$metadata.limit',
+          page: '$metadata.page',
+          totalPages: {
+            $ceil: {
+              $divide: ['$metadata.totalDocs', '$metadata.limit'],
+            },
+          },
+          pagingCounter: { $add: [skip, 1] },
+          hasPrevPage: { $gt: [page, 1] },
+          hasNextPage: {
+            $gt: ['$metadata.totalDocs', { $add: [skip, limit] }],
+          },
+          prevPage: { $cond: { if: { $gt: [page, 1] }, then: { $subtract: [page, 1] }, else: null } },
+          nextPage: {
+            $cond: {
+              if: { $gt: ['$metadata.totalDocs', { $add: [skip, limit] }] },
+              then: { $add: [page, 1] },
+              else: null,
+            },
+          },
+          data: 1,
+        },
       },
     ];
 
-    const users = await User.aggregate(usersAggregate);
-    const totalDocs = await User.countDocuments();
-    const totalPages = Math.ceil(totalDocs / limit);
-    const hasPrevPage = page > 1;
-    const hasNextPage = page < totalPages;
+    const result = await User.aggregate(usersAggregate);
 
     const response = {
       data: {
-        users,
+        users: result[0].data, 
         pagination: {
-          totalDocs,
-          limit,
-          page,
-          totalPages,
-          pagingCounter: skip + 1,
-          hasPrevPage,
-          hasNextPage,
-          prevPage: hasPrevPage ? page - 1 : null,
-          nextPage: hasNextPage ? page + 1 : null,
+          totalDocs: result[0].totalDocs,
+          limit: result[0].limit,
+          page: result[0].page,
+          totalPages: result[0].totalPages,
+          pagingCounter: result[0].pagingCounter,
+          hasPrevPage: result[0].hasPrevPage,
+          hasNextPage: result[0].hasNextPage,
+          prevPage: result[0].prevPage,
+          nextPage: result[0].nextPage,
         },
       },
     };
@@ -60,4 +87,3 @@ module.exports.getUsersWithPostCount = async (req, res) => {
     res.send({ error: error.message });
   }
 };
-
